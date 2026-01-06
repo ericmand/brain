@@ -8,8 +8,8 @@ A state-first, filesystem-backed AI system that continuously maintains a company
 ## Core Philosophy
 
 ### Motivation
- - The things that are working in AI are (1) coding agents with a fileystem and agentic paradugms (over RAG), and tapping into new unstructured sources (transcription, emails, calendar). I want to combine those into a Zed-like UX for non-devs.
- - It is document centric. Like NotionAI but with out all the prior SaaS baggage (and employing more of a filesystem which is AI native).
+ - The things that are working in AI are (1) coding agents with a filesystem and agentic paradigms (over RAG), and tapping into new unstructured sources (transcription, emails, calendar). I want to combine those into a Zed-like UX for non-devs.
+ - It is document centric. Like NotionAI but without all the prior SaaS baggage (and employing more of a filesystem which is AI native).
 
 ### State > Workflows
 - We do not build agent workflows or DAGs.
@@ -17,12 +17,52 @@ A state-first, filesystem-backed AI system that continuously maintains a company
 - AI proposes **state transitions** (diffs/patches) based on new evidence.
 - Humans review and merge changes (PR-style).
 
-### Evidence vs Knowledge
-- **Evidence** = raw inputs (emails, transcripts, Slack messages).
-- **Knowledge** = distilled, durable artifacts (roadmap, GTM, decisions, models).
-- Evidence is often **private by default**.
-- Knowledge is often **shared by default**.
-- Knowledge objects always cite evidence, which may be permission-gated.
+---
+
+## Three-Layer Architecture
+
+```
+┌───────────────────────────────────────────────────────────┐
+│  ENGAGEMENT (ephemeral)                                   │
+│  Chat, exploration, drafts, what-ifs                      │
+│  → promotes to ↓                                          │
+├───────────────────────────────────────────────────────────┤
+│  KNOWLEDGE (canonical)                                    │
+│  Documents, Entities (nouns), Relationships (verbs)       │
+│  ← extracts from ↓                                        │
+├───────────────────────────────────────────────────────────┤
+│  EVIDENCE (immutable)                                     │
+│  Emails, transcripts, calendar, chat history              │
+└───────────────────────────────────────────────────────────┘
+```
+
+### Evidence Layer (Bottom)
+- **Immutable, append-only** — raw inputs are never modified
+- Emails, call transcripts, calendar events, Slack messages
+- Chat history from engagement layer also becomes evidence
+- **Private by default** — user controls what gets promoted
+- Always citable — knowledge claims link back to evidence
+
+### Knowledge Layer (Middle)
+- **Canonical, versioned** — the source of truth
+- Documents (Roadmap, GTM, Decisions)
+- Entities (nouns) + Relationships (verbs)
+- Tables (declarative views over the graph)
+- **Shared by default** — team alignment
+- AI proposes changes; humans approve via diffs
+
+### Engagement Layer (Top)
+- **Ephemeral, interactive** — think ChatGPT
+- Fast exploration, brainstorming, iteration
+- Nothing canonical until explicitly promoted
+- Session-based, private to the user
+- Where the actual work happens
+
+### Information Flow
+- **Evidence → Knowledge**: AI extracts entities, relationships, claims from raw inputs
+- **Engagement → Knowledge**: User approves diffs to persist insights as documents/entities
+- **Engagement → Evidence**: Chat sessions are archived as searchable, citable evidence
+- **Knowledge → Engagement**: AI uses docs/entities as context for conversations
 
 ---
 
@@ -67,35 +107,68 @@ Stored as Markdown (rendered in UI).
 
 ---
 
-## Entities & Relationships
+## The Type System: Nouns & Verbs
 
-### Entities (Thin Profiles)
-All important nouns get a lightweight, evolving profile:
-- People
-- Organizations
-- Products
-- Projects / Features (initially)
+The system maintains a **typed graph** where meaning emerges from two primitives:
 
-Profiles are:
-- Sparse
-- Editable
-- Confidence-scored
-- Evidence-backed
-- Allowed to be wrong initially
+### Nouns (Entity Types)
+Nouns are the things in your company's world:
+- **People** — teammates, customers, investors, candidates
+- **Organizations** — companies, teams, departments
+- **Projects** — initiatives, features, products
+- **Events** — calls, meetings, emails (yes, these are nouns too)
+- **Artifacts** — documents, decisions, deals
+
+Each noun instance is a lightweight, evolving profile:
+- Sparse (not all fields required)
+- Editable (humans can correct)
+- Confidence-scored (AI marks uncertainty)
+- Evidence-backed (claims cite sources)
+- Allowed to be wrong initially (refinement over time)
+
+### Verbs (Relationship Types)
+Verbs connect nouns with meaning:
+- **works_at** — Person → Organization
+- **owns** — Person → Project
+- **participated_in** — Person → Call
+- **mentioned_in** — Person → Email
+- **decided** — Person → Decision
+- **reports_to** — Person → Person
+- **client_of** — Organization → Organization
+
+Verbs are:
+- Named in plain English (AI and humans both understand)
+- Typed (constrain which nouns can connect)
+- Directional (subject → object)
+- Evidence-backed (where did we learn this?)
+- Confidence-scored (how sure are we?)
+
+### Why This Matters
+
+**For AI**: Verbs are the structure that lets AI reason. "Show me everyone who works_at Acme" is unambiguous. "Show me calls where Alice participated_in" becomes a graph traversal.
+
+**For Tables**: When you drop "People" on rows and "Calls" on values, the system finds the verb (participated_in) that connects them. No manual joins.
+
+**For Humans**: Plain English names mean you don't need to learn a schema. "Alice owns the Dashboard project" reads naturally and maps directly to the graph.
+
+### Taxonomy Evolution
+The set of nouns and verbs **emerges over time**:
+- System starts with core types (Person, Organization, Project)
+- AI proposes new types when patterns emerge ("we keep seeing 'Feature' — should this be a type?")
+- Aliases and fuzzy matching handle variations ("works_at" = "employed_by" = "employee_of")
+- Users can accept/reject/merge proposed types
+- No need to define everything upfront
 
 ### Mentions vs Relationships
-- **Mentions**: automatic, high-volume references (text occurrences).
-- **Relationships**: meaningful, labeled claims (owner_of, client_of, works_at).
-- Relationships are proposed, reviewed, cited, and confidence-scored.
-- Mentions ≠ meaning.
+- **Mentions**: automatic, high-volume references (text occurrences). "Alice was mentioned in 47 emails."
+- **Relationships**: meaningful, labeled claims with verbs. "Alice works_at Acme."
+- Mentions ≠ meaning. A mention is evidence; a relationship is a conclusion.
 
 ### Mini Profiles Everywhere
-- Same thin-profile pattern applies to:
-  - users
-  - teammates
-  - customers
-  - investors
-- Avoids CRM heaviness while capturing tribal knowledge.
+The same thin-profile pattern applies to all nouns:
+- users, teammates, customers, investors
+- Avoids CRM heaviness while capturing tribal knowledge
+- Every noun can have relationships via verbs
 
 ---
 
