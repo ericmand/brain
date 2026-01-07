@@ -31,7 +31,6 @@ const TOKEN_STORAGE_KEY = "encryptedToken";
 // Initialize electron-store for persistent storage
 const store = new Store({
   name: "brain-auth",
-  encryptionKey: "brain-desktop-auth-store", // Additional layer of obfuscation
 });
 
 class ClerkAuth extends EventEmitter {

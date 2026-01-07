@@ -7,6 +7,17 @@
  */
 
 import "./index.css";
+import {
+  addPastMeeting,
+  findMeetingById,
+  getAllMeetings,
+  getMeetingsData,
+  removeMeetingById,
+  setMeetingsData,
+  updateMeetingById,
+} from "./renderer/data-layer";
+import { getSafeImageSrc } from "./renderer/media-utils";
+import { createRecordingManager } from "./renderer/recording-manager";
 
 const ipcUnsubscribers = [];
 
@@ -28,22 +39,12 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// Create empty meetings data structure to be filled from the file
-const meetingsData = {
-  upcomingMeetings: [],
-  pastMeetings: [],
-};
-
-// Create empty arrays that will be filled from file
-const upcomingMeetings = [];
-const pastMeetings = [];
-
-// Group past meetings by date
-let pastMeetingsByDate = {};
+const meetingsData = getMeetingsData();
 
 // Global recording state variables
 window.isRecording = false;
 window.currentRecordingId = null;
+window.isRecordingPending = false;
 
 // Function to check if there's an active recording for the current note
 async function checkActiveRecordingState() {
@@ -102,6 +103,16 @@ function updateRecordingButtonUI(isActive, recordingId) {
   }
 }
 
+const recordingManager = createRecordingManager({ updateRecordingButtonUI });
+
+function waitForDomUpdate() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(resolve);
+    });
+  });
+}
+
 // Function to format date for section headers
 function formatDateHeader(dateString) {
   const date = new Date(dateString);
@@ -121,26 +132,7 @@ function formatDateHeader(dateString) {
   }
 }
 
-// We'll initialize pastMeetings and pastMeetingsByDate when we load data from file
-
-// Save meetings data back to file
-async function saveMeetingsData() {
-  // Save to localStorage as a backup
-  localStorage.setItem("meetingsData", JSON.stringify(meetingsData));
-
-  // Save to the actual file using IPC
-  try {
-    console.log("Saving meetings data to file...");
-    const result = await window.electronAPI.saveMeetingsData(meetingsData);
-    if (result.success) {
-      console.log("Meetings data saved successfully to file");
-    } else {
-      console.error("Failed to save meetings data to file:", result.error);
-    }
-  } catch (error) {
-    console.error("Error saving meetings data to file:", error);
-  }
-}
+// We'll initialize meetingsData when we load data from file
 
 // Keep track of which meeting is being edited
 let currentEditingMeetingId = null;
@@ -171,9 +163,7 @@ async function saveCurrentNote() {
   }
 
   // Find which meeting is currently active by ID
-  const activeMeeting = [...upcomingMeetings, ...pastMeetings].find(
-    (m) => m.id === currentEditingMeetingId,
-  );
+  const activeMeeting = findMeetingById(currentEditingMeetingId);
 
   if (activeMeeting) {
     console.log(
@@ -184,29 +174,6 @@ async function saveCurrentNote() {
     const content = editorElement.value;
     console.log(`Note content length: ${content.length} characters`);
 
-    // Update the title and content in the meeting object
-    activeMeeting.title = noteTitle;
-    activeMeeting.content = content;
-
-    // Update the data arrays directly to make sure they stay in sync
-    const pastIndex = meetingsData.pastMeetings.findIndex(
-      (m) => m.id === currentEditingMeetingId,
-    );
-    if (pastIndex !== -1) {
-      meetingsData.pastMeetings[pastIndex].title = noteTitle;
-      meetingsData.pastMeetings[pastIndex].content = content;
-      console.log("Updated meeting in pastMeetings array");
-    }
-
-    const upcomingIndex = meetingsData.upcomingMeetings.findIndex(
-      (m) => m.id === currentEditingMeetingId,
-    );
-    if (upcomingIndex !== -1) {
-      meetingsData.upcomingMeetings[upcomingIndex].title = noteTitle;
-      meetingsData.upcomingMeetings[upcomingIndex].content = content;
-      console.log("Updated meeting in upcomingMeetings array");
-    }
-
     // Also update the subtitle if it's a date-based one
     const dateObj = new Date(activeMeeting.date);
     if (dateObj) {
@@ -214,9 +181,19 @@ async function saveCurrentNote() {
     }
 
     try {
-      // Save the data to file
-      await saveMeetingsData();
-      console.log("Note saved successfully:", noteTitle);
+      const result = await updateMeetingById(
+        currentEditingMeetingId,
+        (meeting) => {
+          meeting.title = noteTitle;
+          meeting.content = content;
+        },
+      );
+
+      if (result.success) {
+        console.log("Note saved successfully:", noteTitle);
+      } else {
+        console.error("Failed to save note:", result.error);
+      }
     } catch (error) {
       console.error("Error saving note:", error);
     }
@@ -228,7 +205,9 @@ async function saveCurrentNote() {
     // Log all available meetings for debugging
     console.log(
       "Available meeting IDs:",
-      [...upcomingMeetings, ...pastMeetings].map((m) => m.id).join(", "),
+      getAllMeetings({ includeCalendar: true })
+        .map((m) => m.id)
+        .join(", "),
     );
   }
 }
@@ -344,10 +323,7 @@ function showEditorView(meetingId) {
     joinMeetingBtn.style.display = "none";
   }
 
-  // Find the meeting in either upcoming or past meetings
-  let meeting = [...upcomingMeetings, ...pastMeetings].find(
-    (m) => m.id === meetingId,
-  );
+  let meeting = findMeetingById(meetingId);
 
   if (!meeting) {
     console.error(`Meeting not found: ${meetingId}`);
@@ -373,42 +349,42 @@ function showEditorView(meetingId) {
     editorElement.value = "";
   }
 
-  // Add a small delay to ensure the DOM has updated before setting content
-  setTimeout(() => {
+  waitForDomUpdate().then(async () => {
+    meeting = findMeetingById(meetingId);
+    if (!meeting) {
+      return;
+    }
+
     if (meeting.content) {
       editorElement.value = meeting.content;
       console.log(
         `Loaded content for meeting: ${meetingId}, length: ${meeting.content.length} characters`,
       );
     } else {
-      // If content is missing, create template
       const now = new Date();
       const template = `# Meeting Title\n• ${meeting.title}\n\n# Meeting Date and Time\n• ${now.toLocaleString()}\n\n# Participants\n• \n\n# Description\n• \n\nChat with meeting transcript: `;
       editorElement.value = template;
 
-      // Save this template to the meeting
-      meeting.content = template;
-      saveMeetingsData();
-      console.log(`Created new template for meeting: ${meetingId}`);
+      const result = await updateMeetingById(meetingId, (draft) => {
+        draft.content = template;
+      });
+
+      if (result.success) {
+        console.log(`Created new template for meeting: ${meetingId}`);
+      } else {
+        console.error("Failed to save new template:", result.error);
+      }
     }
 
-    // Set up auto-save handler for this specific note
     setupAutoSaveHandler();
-
-    // Add event listener to the title
     setupTitleEditing();
-
-    // Check if this note has an active recording and update the record button
     checkActiveRecordingState();
 
-    // Update debug panel with any available data if it's open
     const debugPanel = document.getElementById("debugPanel");
     if (debugPanel && !debugPanel.classList.contains("hidden")) {
-      // Update transcript if available
       if (meeting.transcript && meeting.transcript.length > 0) {
         updateDebugTranscript(meeting.transcript);
       } else {
-        // Clear transcript area if no transcript
         const transcriptContent = document.getElementById("transcriptContent");
         if (transcriptContent) {
           transcriptContent.innerHTML = `
@@ -419,11 +395,9 @@ function showEditorView(meetingId) {
         }
       }
 
-      // Update participants if available
       if (meeting.participants && meeting.participants.length > 0) {
         updateDebugParticipants(meeting.participants);
       } else {
-        // Clear participants area if no participants
         const participantsContent = document.getElementById(
           "participantsContent",
         );
@@ -436,7 +410,6 @@ function showEditorView(meetingId) {
         }
       }
 
-      // Reset video preview when changing notes
       const videoContent = document.getElementById("videoContent");
       if (videoContent) {
         videoContent.innerHTML = `
@@ -449,7 +422,7 @@ function showEditorView(meetingId) {
         `;
       }
     }
-  }, 50);
+  });
 }
 
 // Setup the title editing and save function
@@ -516,11 +489,12 @@ function setupAutoSaveHandler() {
       `Set up editor auto-save handler for meeting: ${currentEditingMeetingId || "none"}`,
     );
 
-    // Manually trigger a save once to ensure the content is saved
-    setTimeout(() => {
-      console.log("Triggering initial save after setup");
-      editorElement.dispatchEvent(new Event("input"));
-    }, 500);
+    waitForDomUpdate().then(() => {
+      if (currentEditingMeetingId) {
+        console.log("Triggering initial save after setup");
+        saveCurrentNote();
+      }
+    });
   } else {
     console.warn("Editor element not found for auto-save setup");
   }
@@ -569,23 +543,17 @@ async function createNewMeeting() {
     `Adding new meeting: id=${id}, title=${newMeeting.title}, content.length=${template.length}`,
   );
 
-  // Add to pastMeetings - make sure to push to both arrays
-  pastMeetings.unshift(newMeeting);
-  meetingsData.pastMeetings.unshift(newMeeting);
-
-  // Update the grouped meetings
-  const dateKey = formatDateHeader(newMeeting.date);
-  if (!pastMeetingsByDate[dateKey]) {
-    pastMeetingsByDate[dateKey] = [];
-  }
-  pastMeetingsByDate[dateKey].unshift(newMeeting);
-
-  // Save the data to file
   try {
-    await saveMeetingsData();
+    const result = await addPastMeeting(newMeeting);
+    if (!result.success) {
+      console.error("Failed to save new meeting:", result.error);
+      alert("Failed to create new note: " + result.error);
+      return null;
+    }
     console.log("New meeting created and saved:", newMeeting.title);
   } catch (error) {
     console.error("Error saving new meeting:", error);
+    return null;
   }
 
   // Set current editing ID to the new meeting ID BEFORE showing the editor
@@ -601,39 +569,13 @@ async function createNewMeeting() {
   // Now show the editor view with the new meeting
   showEditorView(id);
 
-  // Automatically start recording for the new note
   try {
     console.log("Auto-starting recording for new note");
-    // Start manual recording for the new note
-    window.electronAPI
-      .startManualRecording(id)
-      .then((result) => {
-        if (result.success) {
-          console.log(
-            "Auto-started recording for new note with ID:",
-            result.recordingId,
-          );
-          // Update recording button UI
-          window.isRecording = true;
-          window.currentRecordingId = result.recordingId;
-
-          // Update recording button UI
-          const recordButton = document.getElementById("recordButton");
-          if (recordButton) {
-            const recordIcon = recordButton.querySelector(".record-icon");
-            const stopIcon = recordButton.querySelector(".stop-icon");
-
-            recordButton.classList.add("recording");
-            recordIcon.style.display = "none";
-            stopIcon.style.display = "block";
-          }
-        } else {
-          console.error("Failed to auto-start recording:", result.error);
-        }
-      })
-      .catch((error) => {
-        console.error("Error auto-starting recording:", error);
-      });
+    const recordButton = document.getElementById("recordButton");
+    const result = await recordingManager.startRecording(id, recordButton);
+    if (!result.success) {
+      console.error("Failed to auto-start recording:", result.error);
+    }
   } catch (error) {
     console.error("Exception auto-starting recording:", error);
   }
@@ -662,19 +604,16 @@ function renderMeetings() {
   const notesContainer = notesSection.querySelector("#notes-list");
 
   // Add all meetings to the notes section (both upcoming and past)
-  const allMeetings = [...upcomingMeetings, ...pastMeetings];
+  const allMeetings = getAllMeetings();
 
   // Sort by date, newest first
   allMeetings.sort((a, b) => {
     return new Date(b.date) - new Date(a.date);
   });
 
-  // Filter out calendar entries and add only document type meetings to the container
-  allMeetings
-    .filter((meeting) => meeting.type !== "calendar") // Skip calendar entries
-    .forEach((meeting) => {
-      notesContainer.appendChild(createMeetingCard(meeting));
-    });
+  allMeetings.forEach((meeting) => {
+    notesContainer.appendChild(createMeetingCard(meeting));
+  });
 }
 
 // Load meetings data from file
@@ -705,48 +644,7 @@ async function loadMeetingsDataFromFile() {
         result.data.pastMeetings = [];
       }
 
-      // Update the meetings data objects
-      Object.assign(meetingsData, result.data);
-
-      // Clear and reassign the references
-      upcomingMeetings.length = 0;
-      pastMeetings.length = 0;
-
-      console.log(
-        "Before updating arrays, pastMeetings count:",
-        pastMeetings.length,
-      );
-
-      // Filter out calendar entries when loading data
-      meetingsData.upcomingMeetings
-        .filter((meeting) => meeting.type !== "calendar")
-        .forEach((meeting) => upcomingMeetings.push(meeting));
-
-      meetingsData.pastMeetings
-        .filter((meeting) => meeting.type !== "calendar")
-        .forEach((meeting) => pastMeetings.push(meeting));
-
-      console.log(
-        "After updating arrays, pastMeetings count:",
-        pastMeetings.length,
-      );
-      if (pastMeetings.length > 0) {
-        console.log(
-          "First past meeting:",
-          pastMeetings[0].id,
-          pastMeetings[0].title,
-        );
-      }
-
-      // Regroup past meetings by date
-      pastMeetingsByDate = {};
-      meetingsData.pastMeetings.forEach((meeting) => {
-        const dateKey = formatDateHeader(meeting.date);
-        if (!pastMeetingsByDate[dateKey]) {
-          pastMeetingsByDate[dateKey] = [];
-        }
-        pastMeetingsByDate[dateKey].push(meeting);
-      });
+      setMeetingsData(result.data);
 
       console.log("Meetings data loaded from file");
 
@@ -858,7 +756,8 @@ function updateParticipantVideoPreview(frameData) {
   const videoContent = document.getElementById("videoContent");
   if (!videoContent) return;
 
-  const { buffer, participantId, participantName, frameType } = frameData;
+  const { buffer, participantId, participantName, frameType, mimeType } =
+    frameData;
 
   // Check if we already have a container for this participant
   let participantVideoContainer = document.getElementById(
@@ -902,7 +801,12 @@ function updateParticipantVideoPreview(frameData) {
   // Update the image with the new frame
   const videoImg = document.getElementById(`video-frame-${participantId}`);
   if (videoImg) {
-    videoImg.src = `data:image/png;base64,${buffer}`;
+    const safeSrc = getSafeImageSrc({ buffer, mimeType });
+    if (safeSrc) {
+      videoImg.src = safeSrc;
+    } else {
+      console.warn("Rejected participant frame data for safety checks");
+    }
   }
 }
 
@@ -911,7 +815,8 @@ function updateScreensharePreview(frameData) {
   const screenshareContent = document.getElementById("screenshareContent");
   if (!screenshareContent) return;
 
-  const { buffer, participantId, participantName, frameType } = frameData;
+  const { buffer, participantId, participantName, frameType, mimeType } =
+    frameData;
 
   // Check if we already have a container for this screenshare
   let screenshareContainer = document.getElementById(
@@ -951,7 +856,12 @@ function updateScreensharePreview(frameData) {
     `screenshare-frame-${participantId}`,
   );
   if (screenshareImg) {
-    screenshareImg.src = `data:image/png;base64,${buffer}`;
+    const safeSrc = getSafeImageSrc({ buffer, mimeType });
+    if (safeSrc) {
+      screenshareImg.src = safeSrc;
+    } else {
+      console.warn("Rejected screenshare frame data for safety checks");
+    }
   }
 }
 
@@ -1027,9 +937,7 @@ function initDebugPanel() {
 
         // If there's an active meeting, refresh the debug panels with latest data
         if (currentEditingMeetingId) {
-          const meeting = [...upcomingMeetings, ...pastMeetings].find(
-            (m) => m.id === currentEditingMeetingId,
-          );
+          const meeting = findMeetingById(currentEditingMeetingId);
           if (meeting) {
             // Update transcript if available
             if (meeting.transcript && meeting.transcript.length > 0) {
@@ -1377,13 +1285,11 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Log the list of available meeting IDs to help with debugging
         console.log(
           "Available meeting IDs:",
-          pastMeetings.map((m) => m.id),
+          getAllMeetings({ includeCalendar: true }).map((m) => m.id),
         );
 
         // Verify the meeting exists in our data
-        const meeting = [...upcomingMeetings, ...pastMeetings].find(
-          (m) => m.id === meetingId,
-        );
+        const meeting = findMeetingById(meetingId);
 
         if (meeting) {
           console.log("Found meeting to open:", meeting.title);
@@ -1396,9 +1302,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           setTimeout(() => {
             console.log("Retrying data load after delay...");
             loadMeetingsDataFromFile().then(() => {
-              const retryMeeting = [...upcomingMeetings, ...pastMeetings].find(
-                (m) => m.id === meetingId,
-              );
+              const retryMeeting = findMeetingById(meetingId);
               if (retryMeeting) {
                 console.log(
                   "Found meeting on second attempt:",
@@ -1408,7 +1312,7 @@ document.addEventListener("DOMContentLoaded", async () => {
               } else {
                 console.error(
                   "Meeting still not found after retry. Available meetings:",
-                  pastMeetings.map((m) => `${m.id}: ${m.title}`),
+                  meetingsData.pastMeetings.map((m) => `${m.id}: ${m.title}`),
                 );
               }
             });
@@ -1426,9 +1330,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       if (currentEditingMeetingId === meetingId) {
         loadMeetingsDataFromFile().then(() => {
           // Refresh the editor with the updated content
-          const meeting = [...upcomingMeetings, ...pastMeetings].find(
-            (m) => m.id === meetingId,
-          );
+          const meeting = findMeetingById(meetingId);
           if (meeting) {
             document.getElementById("simple-editor").value = meeting.content;
           }
@@ -1461,9 +1363,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // and update the debug panel's participants section
       if (currentEditingMeetingId === meetingId) {
         loadMeetingsDataFromFile().then(() => {
-          const meeting = [...upcomingMeetings, ...pastMeetings].find(
-            (m) => m.id === meetingId,
-          );
+          const meeting = findMeetingById(meetingId);
           if (
             meeting &&
             meeting.participants &&
@@ -1522,9 +1422,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // and update the debug panel's transcript section
       if (currentEditingMeetingId === meetingId) {
         loadMeetingsDataFromFile().then(() => {
-          const meeting = [...upcomingMeetings, ...pastMeetings].find(
-            (m) => m.id === meetingId,
-          );
+          const meeting = findMeetingById(meetingId);
           if (meeting && meeting.transcript && meeting.transcript.length > 0) {
             // Log the latest transcript entry
             const latestEntry =
@@ -1606,9 +1504,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       // If this note is currently being edited, refresh the content
       if (currentEditingMeetingId === meetingId) {
         loadMeetingsDataFromFile().then(() => {
-          const meeting = [...upcomingMeetings, ...pastMeetings].find(
-            (m) => m.id === meetingId,
-          );
+          const meeting = findMeetingById(meetingId);
           if (meeting) {
             // Update the editor with the new content containing the summary
             document.getElementById("simple-editor").value = meeting.content;
@@ -1767,50 +1663,15 @@ document.addEventListener("DOMContentLoaded", async () => {
             if (result.success) {
               console.log("Meeting deleted successfully on server");
 
-              // After successful server deletion, update local data
-              // Remove from local pastMeetings array
-              const pastMeetingIndex = pastMeetings.findIndex(
-                (meeting) => meeting.id === meetingId,
-              );
-              if (pastMeetingIndex !== -1) {
-                pastMeetings.splice(pastMeetingIndex, 1);
-              }
-
-              // Remove from meetingsData as well
-              const pastDataIndex = meetingsData.pastMeetings.findIndex(
-                (meeting) => meeting.id === meetingId,
-              );
-              if (pastDataIndex !== -1) {
-                meetingsData.pastMeetings.splice(pastDataIndex, 1);
-              }
-
-              // Also check upcomingMeetings
-              const upcomingMeetingIndex = upcomingMeetings.findIndex(
-                (meeting) => meeting.id === meetingId,
-              );
-              if (upcomingMeetingIndex !== -1) {
-                upcomingMeetings.splice(upcomingMeetingIndex, 1);
-              }
-
-              const upcomingDataIndex = meetingsData.upcomingMeetings.findIndex(
-                (meeting) => meeting.id === meetingId,
-              );
-              if (upcomingDataIndex !== -1) {
-                meetingsData.upcomingMeetings.splice(upcomingDataIndex, 1);
-              }
-
-              // Update the grouped meetings
-              pastMeetingsByDate = {};
-              meetingsData.pastMeetings.forEach((meeting) => {
-                const dateKey = formatDateHeader(meeting.date);
-                if (!pastMeetingsByDate[dateKey]) {
-                  pastMeetingsByDate[dateKey] = [];
+              removeMeetingById(meetingId).then((removeResult) => {
+                if (!removeResult.success) {
+                  console.error(
+                    "Failed to remove meeting locally:",
+                    removeResult.error,
+                  );
                 }
-                pastMeetingsByDate[dateKey].push(meeting);
+                renderMeetings();
               });
-
-              // Re-render the meetings list
-              renderMeetings();
             } else {
               // Server side deletion failed
               console.error("Server deletion failed:", result.error);
@@ -2004,73 +1865,39 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
-      window.isRecording = !window.isRecording;
+      if (window.isRecordingPending) {
+        console.warn("Recording action already pending");
+        return;
+      }
 
-      // Get the elements inside the button
-      const recordIcon = recordButton.querySelector(".record-icon");
-      const stopIcon = recordButton.querySelector(".stop-icon");
+      window.isRecordingPending = true;
 
-      if (window.isRecording) {
+      if (!window.isRecording) {
         try {
-          // Start recording
           console.log(
             "Starting manual recording for meeting:",
             currentEditingMeetingId,
           );
-          recordButton.disabled = true; // Temporarily disable to prevent double-clicks
 
-          // Change to stop mode immediately for better feedback
-          recordButton.classList.add("recording");
-          recordIcon.style.display = "none";
-          stopIcon.style.display = "block";
-
-          // Call the API to start recording
-          const result = await window.electronAPI.startManualRecording(
+          const result = await recordingManager.startRecording(
             currentEditingMeetingId,
+            recordButton,
           );
-          recordButton.disabled = false;
 
           if (result.success) {
             console.log(
               "Manual recording started with ID:",
               result.recordingId,
             );
-            window.currentRecordingId = result.recordingId;
-
-            // Show a little toast message
-            const toast = document.createElement("div");
-            toast.className = "toast";
-            toast.textContent = "Recording started...";
-            document.body.appendChild(toast);
-
-            // Remove toast after 3 seconds
-            setTimeout(() => {
-              toast.style.opacity = "0";
-              setTimeout(() => {
-                document.body.removeChild(toast);
-              }, 300);
-            }, 3000);
           } else {
-            // If starting failed, revert UI
             console.error("Failed to start recording:", result.error);
             alert("Failed to start recording: " + result.error);
-            window.isRecording = false;
-            recordButton.classList.remove("recording");
-            recordIcon.style.display = "block";
-            stopIcon.style.display = "none";
           }
         } catch (error) {
-          // Handle errors
           console.error("Error starting recording:", error);
           alert("Error starting recording: " + (error.message || error));
-
-          // Reset UI state
-          window.isRecording = false;
-          recordButton.classList.remove("recording");
-          recordIcon.style.display = "block";
-          stopIcon.style.display = "none";
-          recordButton.disabled = false;
         }
+        window.isRecordingPending = false;
       } else {
         // Stop recording
         if (window.currentRecordingId) {
@@ -2079,56 +1906,29 @@ document.addEventListener("DOMContentLoaded", async () => {
               "Stopping manual recording:",
               window.currentRecordingId,
             );
-            recordButton.disabled = true; // Temporarily disable
 
-            // Call the API to stop recording
-            const result = await window.electronAPI.stopManualRecording(
+            const result = await recordingManager.stopRecording(
               window.currentRecordingId,
+              recordButton,
             );
-
-            // Change to record mode
-            recordButton.classList.remove("recording");
-            recordIcon.style.display = "block";
-            stopIcon.style.display = "none";
-            recordButton.disabled = false;
 
             if (result.success) {
               console.log("Manual recording stopped successfully");
-
-              // Show a little toast message
-              const toast = document.createElement("div");
-              toast.className = "toast";
-              toast.textContent = "Recording stopped. Generating summary...";
-              document.body.appendChild(toast);
-
-              // Remove toast after 3 seconds
-              setTimeout(() => {
-                toast.style.opacity = "0";
-                setTimeout(() => {
-                  document.body.removeChild(toast);
-                }, 300);
-              }, 3000);
-
               // The recording-completed event handler will take care of refreshing the content
               // and generating the summary when the recording finishes processing
             } else {
               console.error("Failed to stop recording:", result.error);
               alert("Failed to stop recording: " + result.error);
             }
-
-            // Reset recording ID
-            window.currentRecordingId = null;
           } catch (error) {
             console.error("Error stopping recording:", error);
             alert("Error stopping recording: " + (error.message || error));
-            recordButton.disabled = false;
           }
+          window.isRecordingPending = false;
         } else {
           console.warn("No active recording ID found");
-          // Reset UI anyway
-          recordButton.classList.remove("recording");
-          recordIcon.style.display = "block";
-          stopIcon.style.display = "none";
+          window.isRecordingPending = false;
+          checkActiveRecordingState();
         }
       }
     });
@@ -2212,9 +2012,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Reload the meeting data first
         loadMeetingsDataFromFile().then(() => {
           // Refresh the editor with the updated content
-          const meeting = [...upcomingMeetings, ...pastMeetings].find(
-            (m) => m.id === meetingId,
-          );
+          const meeting = findMeetingById(meetingId);
           if (meeting) {
             document.getElementById("simple-editor").value = meeting.content;
           }
