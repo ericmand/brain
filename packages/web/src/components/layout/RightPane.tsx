@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "convex/react";
 import ReactMarkdown from "react-markdown";
+import DOMPurify from "dompurify";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { useDocumentStore } from "../../stores/documentStore";
 import { useEntityStore } from "../../stores/entityStore";
 import {
   chatWithAI,
-  getPendingEntityMutations,
   type ChatMessage,
 } from "../../lib/ai";
 import type { EntityType, RelationshipType } from "../../lib/entities";
@@ -39,6 +39,7 @@ function ChangePreview({
   documentTitle: string;
 }) {
   const isCreate = change.operation === "create" || change.documentId === "new";
+  const sanitizedContent = DOMPurify.sanitize(change.content);
 
   return (
     <div className="text-xs border border-zinc-300 dark:border-zinc-600 rounded overflow-hidden">
@@ -52,7 +53,7 @@ function ChangePreview({
       </div>
       <div
         className="p-2 bg-green-50 dark:bg-green-950 border-l-2 border-green-500 prose prose-sm prose-zinc dark:prose-invert max-w-none prose-headings:mb-1 prose-headings:mt-1 prose-p:my-1 prose-ul:my-1 prose-li:my-0"
-        dangerouslySetInnerHTML={{ __html: change.content }}
+        dangerouslySetInnerHTML={{ __html: sanitizedContent }}
       />
     </div>
   );
@@ -307,22 +308,43 @@ export function RightPane({
       );
 
       // Apply any pending entity mutations
-      const entityMutations = getPendingEntityMutations();
+      const entityMutations = response.entityMutations ?? [];
+      const failedMutations: Array<{
+        mutation: (typeof entityMutations)[number];
+        error: Error;
+      }> = [];
       for (const mutation of entityMutations) {
-        if (mutation.type === "create_entity") {
-          await createEntity(
-            mutation.entityType as EntityType,
-            mutation.name,
-            mutation.properties,
-          );
-        } else if (mutation.type === "create_relationship") {
-          await createRelationship(
-            mutation.relType as RelationshipType,
-            mutation.subjectId,
-            mutation.objectId,
-            mutation.properties,
-          );
+        try {
+          if (mutation.type === "create_entity") {
+            await createEntity(
+              mutation.entityType as EntityType,
+              mutation.name,
+              mutation.properties,
+            );
+          } else if (mutation.type === "create_relationship") {
+            await createRelationship(
+              mutation.relType as RelationshipType,
+              mutation.subjectId,
+              mutation.objectId,
+              mutation.properties,
+            );
+          }
+        } catch (error) {
+          console.error("Failed to apply entity mutation:", mutation, error);
+          failedMutations.push({ mutation, error: error as Error });
         }
+      }
+      if (failedMutations.length > 0) {
+        const failedNames = failedMutations
+          .map((failure) =>
+            failure.mutation.type === "create_entity"
+              ? failure.mutation.name
+              : failure.mutation.relType,
+          )
+          .join(", ");
+        console.warn(
+          `Failed to apply ${failedMutations.length} entity mutation(s): ${failedNames}`,
+        );
       }
 
       // Send assistant response to Convex

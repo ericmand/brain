@@ -6,6 +6,7 @@ import { useEntityStore } from "../../stores/entityStore";
 import { useTranscriptStore } from "../../stores/transcriptStore";
 import { DocumentEditor } from "../editor/DocumentEditor";
 import { useCallback, useEffect, useState } from "react";
+import DOMPurify from "dompurify";
 import { VERB_METADATA } from "../../lib/entities";
 
 type ConvexChange = {
@@ -70,7 +71,9 @@ function PendingChangesBanner({
               {change.content && !isDelete && (
                 <div
                   className="px-4 py-2 bg-green-50 dark:bg-green-950/50 border-l-4 border-green-500 prose prose-sm prose-zinc dark:prose-invert max-w-none prose-headings:mb-1 prose-headings:mt-1 prose-p:my-1 prose-ul:my-1 prose-li:my-0"
-                  dangerouslySetInnerHTML={{ __html: change.content }}
+                  dangerouslySetInnerHTML={{
+                    __html: DOMPurify.sanitize(change.content),
+                  }}
                 />
               )}
             </div>

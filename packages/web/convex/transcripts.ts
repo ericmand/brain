@@ -3,9 +3,20 @@ import { query, mutation } from "./_generated/server";
 
 // Get all transcripts (metadata only - full content in Turso)
 export const list = query({
-  args: {},
-  handler: async (ctx) => {
-    return await ctx.db.query("transcripts").order("desc").collect();
+  args: {
+    limit: v.optional(v.number()),
+    offset: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = Math.min(Math.max(args.limit ?? 50, 1), 200);
+    const offset = Math.max(args.offset ?? 0, 0);
+
+    return await ctx.db
+      .query("transcripts")
+      .order("createdAt", "desc")
+      .skip(offset)
+      .limit(limit)
+      .collect();
   },
 });
 

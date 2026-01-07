@@ -249,6 +249,7 @@ export type AIChange = {
 export type AIResponse = {
   message: string;
   changes?: AIChange[];
+  entityMutations?: EntityMutation[];
 };
 
 export type ChatMessage = {
@@ -453,22 +454,15 @@ type EntityMutation =
       properties?: Record<string, unknown>;
     };
 
-let pendingMutations: EntityMutation[] = [];
-
-export function getPendingEntityMutations(): EntityMutation[] {
-  const mutations = [...pendingMutations];
-  pendingMutations = [];
-  return mutations;
-}
-
 function handleCreateEntity(
   entityType: string,
   name: string,
   properties?: Record<string, unknown>,
+  mutations?: EntityMutation[],
 ): string {
   // Queue the mutation to be applied after the response
   const tempId = `pending-${entityType}-${Date.now()}`;
-  pendingMutations.push({
+  mutations?.push({
     type: "create_entity",
     entityType,
     name,
@@ -487,8 +481,9 @@ function handleCreateRelationship(
   subjectId: string,
   objectId: string,
   properties?: Record<string, unknown>,
+  mutations?: EntityMutation[],
 ): string {
-  pendingMutations.push({
+  mutations?.push({
     type: "create_relationship",
     relType,
     subjectId,
@@ -507,6 +502,7 @@ function executeTool(
   toolName: string,
   args: Record<string, unknown>,
   workspace: WorkspaceContext,
+  mutations: EntityMutation[],
 ): string {
   switch (toolName) {
     // Document tools
@@ -528,6 +524,7 @@ function executeTool(
         args.type as string,
         args.name as string,
         args.properties as Record<string, unknown> | undefined,
+        mutations,
       );
     case "create_relationship":
       return handleCreateRelationship(
@@ -535,6 +532,7 @@ function executeTool(
         args.subjectId as string,
         args.objectId as string,
         args.properties as Record<string, unknown> | undefined,
+        mutations,
       );
     default:
       return JSON.stringify({ error: `Unknown tool: ${toolName}` });
@@ -560,6 +558,7 @@ export async function chatWithAI(
   userMessage: string,
   conversationHistory: ChatMessage[] = [],
 ): Promise<AIResponse> {
+  const entityMutations: EntityMutation[] = [];
   const apiKey = import.meta.env.VITE_OPENROUTER_API_KEY;
 
   if (!apiKey) {
@@ -634,7 +633,7 @@ export async function chatWithAI(
         }
 
         console.log(`[AI Tool] ${toolName}`, args);
-        const result = executeTool(toolName, args, workspace);
+        const result = executeTool(toolName, args, workspace, entityMutations);
         console.log(
           `[AI Tool Result]`,
           result.slice(0, 200) + (result.length > 200 ? "..." : ""),
@@ -664,6 +663,7 @@ export async function chatWithAI(
       return {
         message: parsed.message || "",
         changes: parsed.changes || undefined,
+        entityMutations: entityMutations.length > 0 ? entityMutations : undefined,
       };
     } catch {
       // Try to find JSON object in the response
@@ -674,6 +674,8 @@ export async function chatWithAI(
           return {
             message: parsed.message || "",
             changes: parsed.changes || undefined,
+            entityMutations:
+              entityMutations.length > 0 ? entityMutations : undefined,
           };
         } catch {
           // Fall through to plain message
@@ -684,6 +686,7 @@ export async function chatWithAI(
       return {
         message: content,
         changes: undefined,
+        entityMutations: entityMutations.length > 0 ? entityMutations : undefined,
       };
     }
   }

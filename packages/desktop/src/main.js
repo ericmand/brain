@@ -370,9 +370,13 @@ const fileOperationManager = {
 // Create a desktop SDK upload token
 async function createDesktopSdkUpload() {
   try {
-    const response = await axios.get("http://localhost:13373/start-recording", {
-      timeout: 10000,
-    });
+    const response = await axios.post(
+      "http://localhost:13373/start-recording",
+      {},
+      {
+        timeout: 10000,
+      },
+    );
 
     if (response.data.status !== "success") {
       console.error("Failed to create upload token:", response.data.message);
@@ -824,48 +828,52 @@ ipcMain.handle("deleteMeeting", async (event, meetingId) => {
   try {
     console.log(`Deleting meeting with ID: ${meetingId}`);
 
-    // Read current data
-    const fileData = await fs.promises.readFile(meetingsFilePath, "utf8");
-    const meetingsData = JSON.parse(fileData);
-
-    // Find the meeting
-    const pastMeetingIndex = meetingsData.pastMeetings.findIndex(
-      (meeting) => meeting.id === meetingId,
-    );
-    const upcomingMeetingIndex = meetingsData.upcomingMeetings.findIndex(
-      (meeting) => meeting.id === meetingId,
-    );
-
     let meetingDeleted = false;
     let recordingId = null;
 
-    // Remove from past meetings if found
-    if (pastMeetingIndex !== -1) {
-      // Store the recording ID for later cleanup if needed
-      recordingId = meetingsData.pastMeetings[pastMeetingIndex].recordingId;
+    // Use fileOperationManager to safely handle the deletion (avoids race conditions)
+    const result = await fileOperationManager.scheduleOperation(
+      async (meetingsData) => {
+        // Find the meeting
+        const pastMeetingIndex = meetingsData.pastMeetings.findIndex(
+          (meeting) => meeting.id === meetingId,
+        );
+        const upcomingMeetingIndex = meetingsData.upcomingMeetings.findIndex(
+          (meeting) => meeting.id === meetingId,
+        );
 
-      // Remove the meeting
-      meetingsData.pastMeetings.splice(pastMeetingIndex, 1);
-      meetingDeleted = true;
-    }
+        // Remove from past meetings if found
+        if (pastMeetingIndex !== -1) {
+          // Store the recording ID for later cleanup if needed
+          recordingId = meetingsData.pastMeetings[pastMeetingIndex].recordingId;
 
-    // Remove from upcoming meetings if found
-    if (upcomingMeetingIndex !== -1) {
-      // Store the recording ID for later cleanup if needed
-      recordingId =
-        meetingsData.upcomingMeetings[upcomingMeetingIndex].recordingId;
+          // Remove the meeting
+          meetingsData.pastMeetings.splice(pastMeetingIndex, 1);
+          meetingDeleted = true;
+        }
 
-      // Remove the meeting
-      meetingsData.upcomingMeetings.splice(upcomingMeetingIndex, 1);
-      meetingDeleted = true;
-    }
+        // Remove from upcoming meetings if found
+        if (upcomingMeetingIndex !== -1) {
+          // Store the recording ID for later cleanup if needed
+          recordingId =
+            meetingsData.upcomingMeetings[upcomingMeetingIndex].recordingId;
+
+          // Remove the meeting
+          meetingsData.upcomingMeetings.splice(upcomingMeetingIndex, 1);
+          meetingDeleted = true;
+        }
+
+        if (!meetingDeleted) {
+          return null; // No changes needed, meeting not found
+        }
+
+        return meetingsData;
+      },
+    );
 
     if (!meetingDeleted) {
       return { success: false, error: "Meeting not found" };
     }
-
-    // Save the updated data
-    await fileOperationManager.writeData(meetingsData);
 
     // If the meeting had a recording, cleanup the reference in the global tracking
     if (
@@ -894,83 +902,95 @@ ipcMain.handle("generateMeetingSummary", async (event, meetingId) => {
       `Manual summary generation requested for meeting: ${meetingId}`,
     );
 
-    // Read current data
-    const fileData = await fs.promises.readFile(meetingsFilePath, "utf8");
-    const meetingsData = JSON.parse(fileData);
+    let summary = null;
+    let meetingNotFound = false;
+    let noTranscript = false;
 
-    // Find the meeting
-    const pastMeetingIndex = meetingsData.pastMeetings.findIndex(
-      (meeting) => meeting.id === meetingId,
-    );
+    // Use fileOperationManager to safely read, generate summary, and update
+    await fileOperationManager.scheduleOperation(async (meetingsData) => {
+      // Find the meeting
+      const pastMeetingIndex = meetingsData.pastMeetings.findIndex(
+        (meeting) => meeting.id === meetingId,
+      );
 
-    if (pastMeetingIndex === -1) {
+      if (pastMeetingIndex === -1) {
+        meetingNotFound = true;
+        return null;
+      }
+
+      const meeting = meetingsData.pastMeetings[pastMeetingIndex];
+
+      // Check if there's a transcript to summarize
+      if (!meeting.transcript || meeting.transcript.length === 0) {
+        noTranscript = true;
+        return null;
+      }
+
+      // Log summary generation to console instead of showing a notification
+      console.log("Generating AI summary for meeting: " + meetingId);
+
+      // Generate the summary
+      summary = await generateMeetingSummary(meeting);
+
+      // Get meeting title for use in the new content
+      const meetingTitle = meeting.title || "Meeting Notes";
+
+      // Get recording ID
+      const recordingId = meeting.recordingId;
+
+      // Check for different possible video file patterns
+      const possibleFilePaths = recordingId
+        ? [
+            path.join(RECORDING_PATH, `${recordingId}.mp4`),
+            path.join(RECORDING_PATH, `macos-desktop-${recordingId}.mp4`),
+            path.join(RECORDING_PATH, `macos-desktop${recordingId}.mp4`),
+            path.join(RECORDING_PATH, `desktop-${recordingId}.mp4`),
+          ]
+        : [];
+
+      // Find the first video file that exists
+      let videoExists = false;
+      let videoFilePath = null;
+
+      try {
+        for (const filePath of possibleFilePaths) {
+          if (fs.existsSync(filePath)) {
+            videoExists = true;
+            videoFilePath = filePath;
+            console.log(`Found video file at: ${videoFilePath}`);
+            break;
+          }
+        }
+      } catch (err) {
+        console.error("Error checking for video files:", err);
+      }
+
+      // Create content with the AI-generated summary
+      meeting.content = `# ${meetingTitle}\n\n${summary}`;
+
+      // If video exists, store the path separately but don't add it to the content
+      if (videoExists) {
+        meeting.videoPath = videoFilePath; // Store the path for future reference
+        console.log(`Stored video path in meeting object: ${videoFilePath}`);
+      } else {
+        console.log("Video file not found or no recording ID");
+      }
+
+      meeting.hasSummary = true;
+
+      return meetingsData;
+    });
+
+    if (meetingNotFound) {
       return { success: false, error: "Meeting not found" };
     }
 
-    const meeting = meetingsData.pastMeetings[pastMeetingIndex];
-
-    // Check if there's a transcript to summarize
-    if (!meeting.transcript || meeting.transcript.length === 0) {
+    if (noTranscript) {
       return {
         success: false,
         error: "No transcript available for this meeting",
       };
     }
-
-    // Log summary generation to console instead of showing a notification
-    console.log("Generating AI summary for meeting: " + meetingId);
-
-    // Generate the summary
-    const summary = await generateMeetingSummary(meeting);
-
-    // Get meeting title for use in the new content
-    const meetingTitle = meeting.title || "Meeting Notes";
-
-    // Get recording ID
-    const recordingId = meeting.recordingId;
-
-    // Check for different possible video file patterns
-    const possibleFilePaths = recordingId
-      ? [
-          path.join(RECORDING_PATH, `${recordingId}.mp4`),
-          path.join(RECORDING_PATH, `macos-desktop-${recordingId}.mp4`),
-          path.join(RECORDING_PATH, `macos-desktop${recordingId}.mp4`),
-          path.join(RECORDING_PATH, `desktop-${recordingId}.mp4`),
-        ]
-      : [];
-
-    // Find the first video file that exists
-    let videoExists = false;
-    let videoFilePath = null;
-
-    try {
-      for (const filePath of possibleFilePaths) {
-        if (fs.existsSync(filePath)) {
-          videoExists = true;
-          videoFilePath = filePath;
-          console.log(`Found video file at: ${videoFilePath}`);
-          break;
-        }
-      }
-    } catch (err) {
-      console.error("Error checking for video files:", err);
-    }
-
-    // Create content with the AI-generated summary
-    meeting.content = `# ${meetingTitle}\n\n${summary}`;
-
-    // If video exists, store the path separately but don't add it to the content
-    if (videoExists) {
-      meeting.videoPath = videoFilePath; // Store the path for future reference
-      console.log(`Stored video path in meeting object: ${videoFilePath}`);
-    } else {
-      console.log("Video file not found or no recording ID");
-    }
-
-    meeting.hasSummary = true;
-
-    // Save the updated data with summary
-    await fileOperationManager.writeData(meetingsData);
 
     console.log("Updated meeting note with AI summary");
 
@@ -994,83 +1014,96 @@ ipcMain.handle("startManualRecording", async (event, meetingId) => {
   try {
     console.log(`Starting manual desktop recording for meeting: ${meetingId}`);
 
-    // Read current data
-    const fileData = await fs.promises.readFile(meetingsFilePath, "utf8");
-    const meetingsData = JSON.parse(fileData);
+    let meetingNotFound = false;
+    let recordingKey = null;
+    let sdkError = null;
 
-    // Find the meeting
-    const pastMeetingIndex = meetingsData.pastMeetings.findIndex(
-      (meeting) => meeting.id === meetingId,
-    );
+    // Use fileOperationManager to safely read and update meeting data
+    await fileOperationManager.scheduleOperation(async (meetingsData) => {
+      // Find the meeting
+      const pastMeetingIndex = meetingsData.pastMeetings.findIndex(
+        (meeting) => meeting.id === meetingId,
+      );
 
-    if (pastMeetingIndex === -1) {
+      if (pastMeetingIndex === -1) {
+        meetingNotFound = true;
+        return null;
+      }
+
+      const meeting = meetingsData.pastMeetings[pastMeetingIndex];
+
+      try {
+        // Prepare desktop audio recording - this is the key difference from our previous implementation
+        // It returns a key that we use as the window ID
+
+        // Log the prepareDesktopAudioRecording API call
+        sdkLogger.logApiCall("prepareDesktopAudioRecording");
+
+        const key = await RecallAiSdk.prepareDesktopAudioRecording();
+        console.log("Prepared desktop audio recording with key:", key);
+        recordingKey = key;
+
+        // Store the recording ID in the meeting
+        meeting.recordingId = key;
+
+        // Initialize transcript array if not present
+        if (!meeting.transcript) {
+          meeting.transcript = [];
+        }
+
+        // Store tracking info for the recording
+        global.activeMeetingIds = global.activeMeetingIds || {};
+        global.activeMeetingIds[key] = {
+          platformName: "Desktop Recording",
+          noteId: meetingId,
+        };
+
+        // Register the recording in our active recordings tracker
+        activeRecordings.addRecording(key, meetingId, "Desktop Recording");
+
+        return meetingsData;
+      } catch (err) {
+        console.error("RecallAI SDK error:", err);
+        sdkError = err;
+        return null;
+      }
+    });
+
+    if (meetingNotFound) {
       return { success: false, error: "Meeting not found" };
     }
 
-    const meeting = meetingsData.pastMeetings[pastMeetingIndex];
-
-    try {
-      // Prepare desktop audio recording - this is the key difference from our previous implementation
-      // It returns a key that we use as the window ID
-
-      // Log the prepareDesktopAudioRecording API call
-      sdkLogger.logApiCall("prepareDesktopAudioRecording");
-
-      const key = await RecallAiSdk.prepareDesktopAudioRecording();
-      console.log("Prepared desktop audio recording with key:", key);
-
-      // Create a recording token
-      const uploadData = await createDesktopSdkUpload();
-      if (!uploadData || !uploadData.upload_token) {
-        return { success: false, error: "Failed to create recording token" };
-      }
-
-      // Store the recording ID in the meeting
-      meeting.recordingId = key;
-
-      // Initialize transcript array if not present
-      if (!meeting.transcript) {
-        meeting.transcript = [];
-      }
-
-      // Store tracking info for the recording
-      global.activeMeetingIds = global.activeMeetingIds || {};
-      global.activeMeetingIds[key] = {
-        platformName: "Desktop Recording",
-        noteId: meetingId,
-      };
-
-      // Register the recording in our active recordings tracker
-      activeRecordings.addRecording(key, meetingId, "Desktop Recording");
-
-      // Save the updated data
-      await fileOperationManager.writeData(meetingsData);
-
-      // Start recording with the key from prepareDesktopAudioRecording
-      console.log("Starting desktop recording with key:", key);
-
-      // Log the startRecording API call
-      sdkLogger.logApiCall("startRecording", {
-        windowId: key,
-        uploadToken: `${uploadData.upload_token.substring(0, 8)}...`, // Log truncated token for security
-      });
-
-      RecallAiSdk.startRecording({
-        windowId: key,
-        uploadToken: uploadData.upload_token,
-      });
-
-      return {
-        success: true,
-        recordingId: key,
-      };
-    } catch (sdkError) {
-      console.error("RecallAI SDK error:", sdkError);
+    if (sdkError) {
       return {
         success: false,
         error: "Failed to prepare desktop recording: " + sdkError.message,
       };
     }
+
+    // Create a recording token (done outside the file operation to avoid long locks)
+    const uploadData = await createDesktopSdkUpload();
+    if (!uploadData || !uploadData.upload_token) {
+      return { success: false, error: "Failed to create recording token" };
+    }
+
+    // Start recording with the key from prepareDesktopAudioRecording
+    console.log("Starting desktop recording with key:", recordingKey);
+
+    // Log the startRecording API call
+    sdkLogger.logApiCall("startRecording", {
+      windowId: recordingKey,
+      uploadToken: `${uploadData.upload_token.substring(0, 8)}...`, // Log truncated token for security
+    });
+
+    RecallAiSdk.startRecording({
+      windowId: recordingKey,
+      uploadToken: uploadData.upload_token,
+    });
+
+    return {
+      success: true,
+      recordingId: recordingKey,
+    };
   } catch (error) {
     console.error("Error starting manual recording:", error);
     return { success: false, error: error.message };
@@ -1113,78 +1146,95 @@ ipcMain.handle("generateMeetingSummaryStreaming", async (event, meetingId) => {
       `Streaming summary generation requested for meeting: ${meetingId}`,
     );
 
-    // Read current data
-    const fileData = await fs.promises.readFile(meetingsFilePath, "utf8");
-    const meetingsData = JSON.parse(fileData);
+    let meetingNotFound = false;
+    let noTranscript = false;
+    let summary = null;
+    let meetingTitle = "Meeting Notes";
 
-    // Find the meeting
-    const pastMeetingIndex = meetingsData.pastMeetings.findIndex(
-      (meeting) => meeting.id === meetingId,
-    );
+    // Use fileOperationManager to safely read meeting data and generate summary
+    await fileOperationManager.scheduleOperation(async (meetingsData) => {
+      // Find the meeting
+      const pastMeetingIndex = meetingsData.pastMeetings.findIndex(
+        (meeting) => meeting.id === meetingId,
+      );
 
-    if (pastMeetingIndex === -1) {
+      if (pastMeetingIndex === -1) {
+        meetingNotFound = true;
+        return null;
+      }
+
+      const meeting = meetingsData.pastMeetings[pastMeetingIndex];
+
+      // Check if there's a transcript to summarize
+      if (!meeting.transcript || meeting.transcript.length === 0) {
+        noTranscript = true;
+        return null;
+      }
+
+      // Log summary generation to console instead of showing a notification
+      console.log("Generating streaming summary for meeting: " + meetingId);
+
+      // Get meeting title for use in the new content
+      meetingTitle = meeting.title || "Meeting Notes";
+
+      // Initial content with placeholders
+      meeting.content = `# ${meetingTitle}\n\nGenerating summary...`;
+
+      // Update the note on the frontend right away
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("summary-update", {
+          meetingId,
+          content: meeting.content,
+        });
+      }
+
+      // Create progress callback for streaming updates
+      const streamProgress = (currentText) => {
+        // Update content with current streaming text
+        meeting.content = `# ${meetingTitle}\n\n## AI-Generated Meeting Summary\n${currentText}`;
+
+        // Send immediate update to renderer - don't debounce or delay this
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          try {
+            // Force immediate send of the update
+            mainWindow.webContents.send("summary-update", {
+              meetingId,
+              content: meeting.content,
+              timestamp: Date.now(), // Add timestamp to ensure uniqueness
+            });
+          } catch (err) {
+            console.error("Error sending streaming update to renderer:", err);
+          }
+        }
+      };
+
+      // Generate summary with streaming
+      summary = await generateMeetingSummary(meeting, streamProgress);
+
+      // Make sure the final content is set correctly
+      meeting.content = `# ${meetingTitle}\n\n${summary}`;
+      meeting.hasSummary = true;
+
+      return meetingsData;
+    });
+
+    if (meetingNotFound) {
       return { success: false, error: "Meeting not found" };
     }
 
-    const meeting = meetingsData.pastMeetings[pastMeetingIndex];
-
-    // Check if there's a transcript to summarize
-    if (!meeting.transcript || meeting.transcript.length === 0) {
+    if (noTranscript) {
       return {
         success: false,
         error: "No transcript available for this meeting",
       };
     }
 
-    // Log summary generation to console instead of showing a notification
-    console.log("Generating streaming summary for meeting: " + meetingId);
-
-    // Get meeting title for use in the new content
-    const meetingTitle = meeting.title || "Meeting Notes";
-
-    // Initial content with placeholders
-    meeting.content = `# ${meetingTitle}\n\nGenerating summary...`;
-
-    // Update the note on the frontend right away
-    mainWindow.webContents.send("summary-update", {
-      meetingId,
-      content: meeting.content,
-    });
-
-    // Create progress callback for streaming updates
-    const streamProgress = (currentText) => {
-      // Update content with current streaming text
-      meeting.content = `# ${meetingTitle}\n\n## AI-Generated Meeting Summary\n${currentText}`;
-
-      // Send immediate update to renderer - don't debounce or delay this
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        try {
-          // Force immediate send of the update
-          mainWindow.webContents.send("summary-update", {
-            meetingId,
-            content: meeting.content,
-            timestamp: Date.now(), // Add timestamp to ensure uniqueness
-          });
-        } catch (err) {
-          console.error("Error sending streaming update to renderer:", err);
-        }
-      }
-    };
-
-    // Generate summary with streaming
-    const summary = await generateMeetingSummary(meeting, streamProgress);
-
-    // Make sure the final content is set correctly
-    meeting.content = `# ${meetingTitle}\n\n${summary}`;
-    meeting.hasSummary = true;
-
-    // Save the updated data with summary
-    await fileOperationManager.writeData(meetingsData);
-
     console.log("Updated meeting note with AI summary (streaming)");
 
     // Final notification to renderer
-    mainWindow.webContents.send("summary-generated", meetingId);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("summary-generated", meetingId);
+    }
 
     return {
       success: true,
@@ -1726,13 +1776,11 @@ ${transcriptText}`,
     if (!progressCallback) {
       // Call the OpenAI API (via OpenRouter) for summarization (non-streaming)
       const response = await openai.chat.completions.create({
-        model: MODELS.PRIMARY, // Use our primary model for a good balance of quality and speed
+        models: [MODELS.PRIMARY, ...MODELS.FALLBACKS],
+        allow_fallbacks: true,
         messages: messages,
         max_tokens: 1000,
         temperature: 0.7,
-        fallbacks: MODELS.FALLBACKS, // Use our defined fallback models
-        transform_to_openai: true, // Ensures consistent response format across models
-        route: "fallback", // Automatically use fallbacks if the primary model is unavailable
       });
 
       // Log which model was actually used
@@ -1748,14 +1796,12 @@ ${transcriptText}`,
 
       // Create a streaming request
       const stream = await openai.chat.completions.create({
-        model: MODELS.PRIMARY, // Use our primary model for a good balance of quality and speed
+        models: [MODELS.PRIMARY, ...MODELS.FALLBACKS],
+        allow_fallbacks: true,
         messages: messages,
         max_tokens: 1000,
         temperature: 0.7,
         stream: true,
-        fallbacks: MODELS.FALLBACKS, // Use our defined fallback models
-        transform_to_openai: true, // Ensures consistent response format across models
-        route: "fallback", // Automatically use fallbacks if the primary model is unavailable
       });
 
       // Handle streaming events

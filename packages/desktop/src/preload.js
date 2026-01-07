@@ -6,8 +6,11 @@ const { contextBridge, ipcRenderer } = require("electron");
 // Set up the SDK logger bridge between main and renderer
 contextBridge.exposeInMainWorld("sdkLoggerBridge", {
   // Receive logs from main process
-  onSdkLog: (callback) =>
-    ipcRenderer.on("sdk-log", (_, logEntry) => callback(logEntry)),
+  onSdkLog: (callback) => {
+    const handler = (_, logEntry) => callback(logEntry);
+    ipcRenderer.on("sdk-log", handler);
+    return () => ipcRenderer.removeListener("sdk-log", handler);
+  },
 
   // Send logs from renderer to main process
   sendSdkLog: (logEntry) => ipcRenderer.send("sdk-log", logEntry),
@@ -29,30 +32,57 @@ contextBridge.exposeInMainWorld("electronAPI", {
   debugGetHandlers: () => ipcRenderer.invoke("debugGetHandlers"),
   checkForDetectedMeeting: () => ipcRenderer.invoke("checkForDetectedMeeting"),
   joinDetectedMeeting: () => ipcRenderer.invoke("joinDetectedMeeting"),
-  onOpenMeetingNote: (callback) =>
-    ipcRenderer.on("open-meeting-note", (_, meetingId) => callback(meetingId)),
-  onRecordingCompleted: (callback) =>
-    ipcRenderer.on("recording-completed", (_, meetingId) =>
-      callback(meetingId),
-    ),
-  onTranscriptUpdated: (callback) =>
-    ipcRenderer.on("transcript-updated", (_, meetingId) => callback(meetingId)),
-  onSummaryGenerated: (callback) =>
-    ipcRenderer.on("summary-generated", (_, meetingId) => callback(meetingId)),
-  onSummaryUpdate: (callback) =>
-    ipcRenderer.on("summary-update", (_, data) => callback(data)),
-  onRecordingStateChange: (callback) =>
-    ipcRenderer.on("recording-state-change", (_, data) => callback(data)),
-  onParticipantsUpdated: (callback) =>
-    ipcRenderer.on("participants-updated", (_, meetingId) =>
-      callback(meetingId),
-    ),
-  onVideoFrame: (callback) =>
-    ipcRenderer.on("video-frame", (_, data) => callback(data)),
-  onMeetingDetectionStatus: (callback) =>
-    ipcRenderer.on("meeting-detection-status", (_, data) => callback(data)),
-  onMeetingTitleUpdated: (callback) =>
-    ipcRenderer.on("meeting-title-updated", (_, data) => callback(data)),
+  onOpenMeetingNote: (callback) => {
+    const handler = (_, meetingId) => callback(meetingId);
+    ipcRenderer.on("open-meeting-note", handler);
+    return () => ipcRenderer.removeListener("open-meeting-note", handler);
+  },
+  onRecordingCompleted: (callback) => {
+    const handler = (_, meetingId) => callback(meetingId);
+    ipcRenderer.on("recording-completed", handler);
+    return () => ipcRenderer.removeListener("recording-completed", handler);
+  },
+  onTranscriptUpdated: (callback) => {
+    const handler = (_, meetingId) => callback(meetingId);
+    ipcRenderer.on("transcript-updated", handler);
+    return () => ipcRenderer.removeListener("transcript-updated", handler);
+  },
+  onSummaryGenerated: (callback) => {
+    const handler = (_, meetingId) => callback(meetingId);
+    ipcRenderer.on("summary-generated", handler);
+    return () => ipcRenderer.removeListener("summary-generated", handler);
+  },
+  onSummaryUpdate: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on("summary-update", handler);
+    return () => ipcRenderer.removeListener("summary-update", handler);
+  },
+  onRecordingStateChange: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on("recording-state-change", handler);
+    return () =>
+      ipcRenderer.removeListener("recording-state-change", handler);
+  },
+  onParticipantsUpdated: (callback) => {
+    const handler = (_, meetingId) => callback(meetingId);
+    ipcRenderer.on("participants-updated", handler);
+    return () => ipcRenderer.removeListener("participants-updated", handler);
+  },
+  onVideoFrame: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on("video-frame", handler);
+    return () => ipcRenderer.removeListener("video-frame", handler);
+  },
+  onMeetingDetectionStatus: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on("meeting-detection-status", handler);
+    return () => ipcRenderer.removeListener("meeting-detection-status", handler);
+  },
+  onMeetingTitleUpdated: (callback) => {
+    const handler = (_, data) => callback(data);
+    ipcRenderer.on("meeting-title-updated", handler);
+    return () => ipcRenderer.removeListener("meeting-title-updated", handler);
+  },
   getActiveRecordingId: (noteId) =>
     ipcRenderer.invoke("getActiveRecordingId", noteId),
 
@@ -61,7 +91,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     isAuthenticated: () => ipcRenderer.invoke("auth:isAuthenticated"),
     login: () => ipcRenderer.invoke("auth:login"),
     logout: () => ipcRenderer.invoke("auth:logout"),
-    onAuthStateChanged: (callback) =>
-      ipcRenderer.on("auth-state-changed", (_, data) => callback(data)),
+    onAuthStateChanged: (callback) => {
+      const handler = (_, data) => callback(data);
+      ipcRenderer.on("auth-state-changed", handler);
+      return () => ipcRenderer.removeListener("auth-state-changed", handler);
+    },
   },
 });
