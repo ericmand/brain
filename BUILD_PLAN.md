@@ -182,18 +182,18 @@ The core UX follows an **AI IDE pattern** with three primary panes:
 ## Phase 1: Core UI Shell (Weeks 5-8)
 
 ### 1.1 Three-Pane Layout
-- [ ] Resizable pane container component
-- [ ] Pane collapse/expand controls
-- [ ] Responsive behavior (mobile: bottom sheet for AI, tabs for nav)
-- [ ] Keyboard navigation between panes
+- [x] Resizable pane container component
+- [x] Pane collapse/expand controls
+- [x] Responsive behavior (mobile: bottom sheet for AI, tabs for nav)
+- [x] Keyboard navigation between panes
 
 ### 1.2 Left Pane - Navigation
-- [ ] Tree view component
-- [ ] Artifact type sections (Documents, Entities, Models)
-- [ ] Search bar with fuzzy matching
-- [ ] Badge system for pending changes
-- [ ] Drag-and-drop reordering (within sections)
-- [ ] Context menu (rename, delete, move)
+- [x] Tree view component
+- [x] Artifact type sections (Documents, Entities, Models)
+- [x] Search bar with fuzzy matching
+- [x] Badge system for pending changes
+- [x] Drag-and-drop reordering (within sections)
+- [x] Context menu (rename, delete, move)
 
 ### 1.3 Center Pane - Artifact Viewer
 - [ ] Markdown renderer with:
