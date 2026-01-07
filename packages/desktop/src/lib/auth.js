@@ -111,9 +111,7 @@ class ClerkAuth extends EventEmitter {
 
           // Extract session from cookies
           try {
-            const cookies = await session.defaultSession.cookies.get({
-              domain: CLERK_FRONTEND_API.replace("clerk.", "."),
-            });
+            const cookies = await session.defaultSession.cookies.get({});
 
             const sessionCookie = cookies.find((c) => c.name === "__session");
             if (sessionCookie) {
@@ -225,7 +223,12 @@ class ClerkAuth extends EventEmitter {
       const parts = token.split(".");
       if (parts.length !== 3) return false;
 
-      const payload = JSON.parse(Buffer.from(parts[1], "base64").toString());
+      const base64Url = parts[1];
+      const base64 = base64Url
+        .replace(/-/g, "+")
+        .replace(/_/g, "/")
+        .padEnd(base64Url.length + ((4 - (base64Url.length % 4)) % 4), "=");
+      const payload = JSON.parse(Buffer.from(base64, "base64").toString());
       const exp = payload.exp * 1000;
 
       if (Date.now() >= exp) {
@@ -256,15 +259,19 @@ class ClerkAuth extends EventEmitter {
   /**
    * Log out and clear session
    */
-  logout() {
+  async logout() {
     this.sessionToken = null;
     this.user = null;
     this.clearToken();
 
     // Clear Clerk cookies
-    session.defaultSession.clearStorageData({
-      storages: ["cookies"],
-    });
+    try {
+      await session.defaultSession.clearStorageData({
+        storages: ["cookies"],
+      });
+    } catch (error) {
+      console.error("[Auth] Failed to clear cookies:", error);
+    }
 
     this.emit("logout");
     console.log("[Auth] Logged out");
