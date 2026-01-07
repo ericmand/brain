@@ -632,6 +632,75 @@ This is the standard OAuth flow for desktop apps — Clerk supports it.
 
 ---
 
+## AI Integration
+
+### LLM Provider: OpenRouter
+
+We use [OpenRouter](https://openrouter.ai) as our LLM gateway rather than direct provider APIs.
+
+**Why OpenRouter over direct Claude API:**
+- **Model flexibility**: Switch between Claude, GPT-4, Llama, etc. without code changes
+- **Fallback options**: If one provider is down, can route to another
+- **Single billing**: One API key, one bill, unified usage tracking
+- **Future-proof**: New models available immediately without integration work
+
+**Configuration:**
+```
+OPENROUTER_API_KEY=sk-or-...
+OPENROUTER_DEFAULT_MODEL=anthropic/claude-sonnet-4  # or other model
+```
+
+**Model selection strategy:**
+- Default to Claude Sonnet for balance of quality/speed/cost
+- Could expose model picker in UI later for power users
+- Could use cheaper/faster models for simple tasks (entity extraction)
+- Could use stronger models for complex tasks (document rewrites)
+
+### AI Request/Response Format
+
+**Context sent to AI:**
+```typescript
+{
+  document: {
+    path: string
+    title: string
+    content: string  // current document HTML
+  }
+  userMessage: string
+  conversationHistory: Message[]
+  // Future: relevant entities, user context doc
+}
+```
+
+**Structured response from AI:**
+```typescript
+{
+  message: string  // conversational response
+  suggestion?: {
+    description: string
+    operations: Array<{
+      type: 'insert' | 'replace' | 'delete'
+      // For insert: where to insert and what
+      // For replace: what to find and what to replace with
+      // For delete: what to remove
+      target?: string  // CSS selector, text match, or position
+      content?: string  // new content (HTML)
+    }>
+  }
+}
+```
+
+### Prompt Engineering
+
+System prompt instructs the AI to:
+1. Understand it's editing a document in a knowledge management system
+2. Return structured JSON responses
+3. Generate valid HTML content matching the document's style
+4. Be specific about where changes should be made
+5. Explain changes in plain language
+
+---
+
 ## Decisions Log
 
 | Date | Decision | Rationale |
